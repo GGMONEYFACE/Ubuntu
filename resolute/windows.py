@@ -4,6 +4,8 @@ import re
 import shutil
 import subprocess
 
+from . import x11
+
 SKIP_TYPES = ("_NET_WM_WINDOW_TYPE_DESKTOP", "_NET_WM_WINDOW_TYPE_DOCK", "_NET_WM_WINDOW_TYPE_SPLASH",
               "_NET_WM_WINDOW_TYPE_TOOLBAR", "_NET_WM_WINDOW_TYPE_MENU", "_NET_WM_WINDOW_TYPE_NOTIFICATION")
 
@@ -65,13 +67,19 @@ def list_windows(exclude=()):
 
 
 def activate(wid):
-    _fire("windowactivate", str(wid))
+    # xdotool is what this was written against, and Kali has it. Ubuntu does not,
+    # so fall back to the same request spoken directly to the window manager.
+    if not _fire("windowactivate", str(wid)):
+        x11.activate(wid)
 
 
 def minimize(wid):
-    _fire("windowminimize", str(wid))
+    if not _fire("windowminimize", str(wid)):
+        x11.minimize(wid)
 
 
 def _fire(*args):
-    if shutil.which("xdotool"):
-        subprocess.Popen(["xdotool", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not shutil.which("xdotool"):
+        return False
+    subprocess.Popen(["xdotool", *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return True

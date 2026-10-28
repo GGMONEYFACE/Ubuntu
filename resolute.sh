@@ -5,18 +5,27 @@
 
 cd "$(dirname "$(readlink -f "$0")")" || exit 1
 
-# Resolute is built for X11. It still starts on Wayland, but with much of it not working,
-# so say so: in the terminal, and as a desktop notification for when it starts at login.
-if [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    warning="Resolute is running on Wayland, where it can only partly work:
-- open programs won't appear in the letter slots, and can't be switched from there
-- the desk may not stay behind other windows, and may show up in the taskbar and Alt+Tab
-- the system's own taskbar or top bar can't be hidden
+# Ubuntu (and a VMware guest installed from it) is a Wayland session that still
+# runs XWayland on $DISPLAY. Qt would open a Wayland window, which cannot become
+# the desktop. Pin the X11 plugin whenever an X server is there. A plain X
+# session, such as the VirtualBox Kali guest this was built on, already uses it.
+if [ -n "${DISPLAY:-}" ] && [ -z "${RESOLUTE_QT_PLATFORM:-}" ]; then
+    export QT_QPA_PLATFORM=xcb
+fi
+
+# No X server at all: there is nothing for the mask to attach to.
+if [ -z "${DISPLAY:-}" ]; then
+    warning="Resolute needs an X11 display. This session does not have one, so the desk cannot become the desktop and open programs will not appear in the letter slots.
 For the full desk, log in to an Xfce session on X11: run ./setup-x11.sh to set it up."
     printf 'Warning: %s\n' "$warning" >&2
     if command -v notify-send >/dev/null 2>&1; then
-        notify-send -a Resolute -i dialog-warning -t 15000 "Resolute on Wayland" "$warning" >/dev/null 2>&1 &
+        notify-send -a Resolute -i dialog-warning -t 15000 "Resolute needs X11" "$warning" >/dev/null 2>&1 &
     fi
+elif [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    # XWayland is enough for the desk itself. Native Wayland programs are not X
+    # clients, so the letter slots cannot see them. Say so, without a notification
+    # at every login.
+    echo "Resolute is using XWayland. Programs that use Wayland directly will not appear in the letter slots, and this desktop's own panel may stay on top. For the full desk, run ./setup-x11.sh and log in to Xfce on X11." >&2
 fi
 
 if [ "$1" = "--autostart" ]; then

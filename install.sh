@@ -11,12 +11,15 @@ if [ "$1" = "--remove" ]; then
     exit 0
 fi
 
-# The entry is still installed on Wayland, but it only starts the desk in Xfce sessions,
-# so point to the way to get one.
-if [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    echo "Warning: this session is Wayland, where Resolute can only partly work (open programs" >&2
-    echo "won't appear in the letter slots, and the system taskbar can't be hidden). The login" >&2
-    echo "entry only starts the desk in an Xfce session; run ./setup-x11.sh to set one up on X11." >&2
+# The login entry only starts the desk in an Xfce session. On Ubuntu's Wayland
+# session the desk can still be started by hand, through XWayland.
+if [ -z "${DISPLAY:-}" ]; then
+    echo "Warning: this session has no X11 display. Resolute cannot become the desktop here." >&2
+    echo "The login entry only starts the desk in an Xfce session; run ./setup-x11.sh to set one up on X11." >&2
+elif [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    echo "Warning: this session is Wayland. Resolute will use XWayland, so programs that use" >&2
+    echo "Wayland directly will not appear in the letter slots. The login entry only starts" >&2
+    echo "the desk in an Xfce session; run ./setup-x11.sh to set one up on X11." >&2
 fi
 
 mkdir -p "$(dirname "$autostart")"

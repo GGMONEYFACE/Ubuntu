@@ -1,8 +1,28 @@
 """Run the Resolute desk: python3 -m resolute [--windowed] [--screenshot FILE]"""
 
 import argparse
+import os
 import signal
 import sys
+
+
+def _prefer_x11():
+    """Use the X11 Qt plugin whenever an X server is reachable.
+
+    Ubuntu's desktop is Wayland, but it keeps XWayland on $DISPLAY. Qt prefers
+    Wayland then, and a Wayland window cannot mark itself as the desktop or see
+    the session's other windows. VirtualBox Kali is already a plain X session,
+    so forcing the plugin changes nothing there. RESOLUTE_QT_PLATFORM overrides.
+    """
+    override = os.environ.get("RESOLUTE_QT_PLATFORM")
+    if override:
+        os.environ["QT_QPA_PLATFORM"] = override
+        return
+    if os.environ.get("DISPLAY"):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+
+
+_prefer_x11()
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication

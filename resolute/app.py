@@ -1,17 +1,15 @@
 """The desk window: scales the desk scene to the screen, tilts the view into open drawers, handles input."""
 
 import ctypes
-import shutil
-import subprocess
 import threading
 import time
 from types import SimpleNamespace
 
 from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer
 from PyQt6.QtGui import QAction, QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap, QRadialGradient
-from PyQt6.QtWidgets import QMenu, QWidget
+from PyQt6.QtWidgets import QApplication, QMenu, QWidget
 
-from . import audio, clock, config, desk, lamp, note, pencup, shelves, sketch, stickies, textures, windows
+from . import audio, clock, config, desk, lamp, note, pencup, shelves, sketch, stickies, textures, windows, x11
 from .drawers import DocumentsDrawer, FilesDrawer, ProgramsDrawer
 from .gauges import Gauge
 from .globe import Globe
@@ -48,6 +46,12 @@ class DeskWindow(QWidget):
         self.setWindowTitle("Resolute")
         if not windowed:
             self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
+            # Before the native window exists. The window manager reads the type
+            # when the window is first mapped and will not revisit it later, so
+            # setting this after winId() (as a bare-metal mutter does) leaves an
+            # ordinary window.
+            self.setAttribute(Qt.WidgetAttribute.WA_X11NetWmWindowTypeDesktop, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
         self.windowed = windowed
@@ -130,6 +134,17 @@ class DeskWindow(QWidget):
         self.stats_timer.start(config.get("stats_interval_ms"))
         self.anim_timer = QTimer(self, timeout=self.tick)
         self.anim_timer.start(FRAME_MS)
+        # VMware autofit and a laptop being docked change the screen after startup.
+        # A few tries let the window manager finish mapping; then we stop so a
+        # panel that refuses the size is not fought with every second.
+        self._place_tries = 0
+        self._placed_for = None
+        self._attempted_rect = None
+        self._seen_native = None
+        self._pinned_late = False
+        if not windowed:
+            self._screen_timer = QTimer(self, timeout=self.place_on_screen)
+            self._screen_timer.start(1000)
         self.poll_stats()
         if self.stickies.error:
             self.notify(self.stickies.error)
@@ -155,6 +170,12 @@ class DeskWindow(QWidget):
         self._stop.set()
         self._poke.set()
         super().closeEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self.windowed:
+            self.place_on_screen()
+            self.make_desktop_window()
 
     # -- coordinates -------------------------------------------------------
     def _fit(self):
@@ -1006,10 +1027,68 @@ class DeskWindow(QWidget):
         self._poke.set()
 
     # -- desktop integration -------------------------------------------------
+    def place_on_screen(self, *_args):
+        """Cover the primary output, in the pixels X is actually scanning out.
+
+        Qt sizes windows from the panel's reported millimetres. That matches a
+        VirtualBox guest. On bare metal, and on VMware, the reported size is
+        often wrong, and the desk then sits in a corner of the screen.
+        """
+        if self.windowed:
+            return
+        rect = x11.primary_rect()
+        if rect is None:
+            screen = QApplication.instance().primaryScreen() if QApplication.instance() else None
+            if screen is not None and self.geometry() != screen.geometry():
+                self.setGeometry(screen.geometry())
+            return
+        x, y, w, h = rect
+        if w <= 0 or h <= 0:
+            return
+        if rect == self._placed_for:
+            return
+        if rect != self._attempted_rect:
+            self._place_tries = 0
+            self._attempted_rect = rect
+            self._seen_native = None
+            self._pinned_late = False
+        self._place_tries += 1
+        if self._place_tries > 5:
+            self._placed_for = rect
+            return
+        dpr = self.devicePixelRatioF() or 1.0
+        target = QRect(int(round(x / dpr)), int(round(y / dpr)), max(1, int(round(w / dpr))), max(1, int(round(h / dpr))))
+        native = x11.client_geometry(int(self.winId())) if self.isVisible() else None
+        # Right after a resize the server can still be reporting the previous
+        # size. Acting on that once made a 1920-wide desk 5760 wide. Only trust
+        # a size that has been seen twice, and that Qt has already flushed.
+        stable = native is not None and native == self._seen_native
+        self._seen_native = native
+        if stable and self.width() and abs(native[2] - round(self.width() * dpr)) <= 2 and abs(native[2] - w) > 2:
+            ratio = native[2] / self.width()
+            if ratio > 0:
+                target = QRect(int(round(x / ratio)), int(round(y / ratio)),
+                               max(1, int(round(w / ratio))), max(1, int(round(h / ratio))))
+        if stable and abs(native[0] - x) <= 2 and abs(native[1] - y) <= 2 and abs(native[2] - w) <= 2 and abs(native[3] - h) <= 2:
+            self._placed_for = rect
+            self._place_tries = 0
+            # The window manager finishes its own state (and may flag the new
+            # window as needing attention) after showEvent. Pin again once the
+            # size has settled, or that late state wins.
+            if not self._pinned_late:
+                self.make_desktop_window()
+                self._pinned_late = True
+            return
+        if self.geometry() != target:
+            self.setGeometry(target)
+        elif stable:
+            x11.move_resize(int(self.winId()), x, y, w, h)
+        if self.isVisible():
+            self.make_desktop_window()
+
     def make_desktop_window(self):
         """Mark the window as the desktop so the window manager keeps it beneath everything."""
-        if not shutil.which("xprop"):
-            return
-        subprocess.run(["xprop", "-id", str(int(self.winId())), "-f", "_NET_WM_WINDOW_TYPE", "32a",
-                        "-set", "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DESKTOP"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        wid = int(self.winId())
+        x11.claim_desktop(wid)
+        if self.isVisible():
+            x11.pin_below(wid)
